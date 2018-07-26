@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 from scipy.stats import ortho_group
 
-from homography import calculateHomography, decomposeHomography
+from homography import Homography, ProjectionModel
+from ransac_test_util import trial_count
 
 
 class TestHomography(unittest.TestCase):
@@ -24,7 +25,8 @@ class TestHomography(unittest.TestCase):
         pts_2 /= pts_2[:, np.newaxis, 2]
         pts_2 = pts_2[:, :2]
 
-        M = calculateHomography(pts_1, pts_2)
+        data = np.concatenate((pts_1, pts_2), axis=1)
+        M = ProjectionModel().fit(data).M
         np.testing.assert_almost_equal(M, gt)
 
     def test_homography_decomposition(self):
@@ -50,8 +52,66 @@ class TestHomography(unittest.TestCase):
         H = P @ A
 
         # step 3
-        R_, t_ = decomposeHomography(H, P)
+        hom = Homography(H, P)
+        R_, t_ = hom.R, hom.t
 
         # step 4
         np.testing.assert_almost_equal(R, R_)
         np.testing.assert_almost_equal(t, t_)
+
+    def test_ransac(self):
+        """
+        Test ransac by following steps:
+        1. make random homography
+        2. make inliers with noise
+        3. make outliers
+        4. RUN
+        """
+        N_TOTAL = 1000
+        N_INLIER = 500
+        N_ITER = trial_count(N_INLIER / N_TOTAL, 4)
+        N_OUTLIER = N_TOTAL - N_INLIER
+        NOISE_SIZE = 0
+
+        # step 1
+        gt = np.random.random((3, 3))
+        gt[2, :] *= 100
+        gt[2, 2] = 1
+
+        # step 2
+        hom = Homography(gt)
+        x = np.random.random((N_INLIER, 2))
+        y = hom.transform(x)
+
+        x += np.random.random((N_INLIER, 2)) * NOISE_SIZE
+        y += np.random.random((N_INLIER, 2)) * NOISE_SIZE
+        inliers = np.concatenate((x, y), axis=1)
+
+        # step 3
+        outliers = np.random.random((N_OUTLIER, 4))
+        data = np.concatenate(
+            (inliers, outliers),
+            axis=0
+        )
+
+        # step 4
+        from ransac import RANSAC
+        ransac_inst = RANSAC(
+            n_sample=4,
+            n_iter=N_ITER,
+            err_thres=0.1,
+        )
+        model = ProjectionModel()
+        best_func, best_inliers = ransac_inst(data, model)
+        np.testing.assert_almost_equal(best_func.M, gt)
+
+        # # step 5
+        # from ransac import MSAC
+        # msac_inst = MSAC(
+        #     n_sample=4,
+        #     n_iter=N_ITER,
+        #     err_thres=0.01,
+        # )
+        # model = ProjectionModel()
+        # best_func, best_inliers = msac_inst(data, model)
+        # np.testing.assert_almost_equal(best_func.M, gt)

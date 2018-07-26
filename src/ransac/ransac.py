@@ -1,7 +1,6 @@
 # Naive RANSAC (Random Sample Consensus)
 
 import numpy as np
-from tqdm import tqdm
 
 from regression_model import RegressionModel, Function
 
@@ -12,18 +11,17 @@ class _SamplePartition:
         self.others = others
 
     @staticmethod
-    def random(data, n_sample, n_data=None, mask=None):
-        # mask is given because of reallocation problem
+    def random(data, n_sample, n_data=None):
         if not n_data:
             n_data = len(data)
-        _idxs = np.random.choice(n_data, n_sample)
+        mask = np.zeros((n_data,), dtype=bool)
+        _idxs = np.random.choice(n_data, n_sample, replace=False)
 
         mask[_idxs] = True
         sample = _SamplePartition(
             inliers=data[mask],
             others=data[~mask],
         )
-        mask[_idxs] = False
         return sample
 
 
@@ -51,39 +49,24 @@ class _RANSACFamily:
         self._n_sample = n_sample
         self._partition_class = partition_class
 
+    def update_partition(self, function, partition):
+        raise NotImplementedError
+
     def __call__(self, data, model: RegressionModel):
         n_data = len(data)
-        mask = np.zeros((n_data,), dtype=bool)
 
         best_partition = self._partition_class(
             function=None, inliers=[], outliers=data)
-        for i in tqdm(range(self._iter)):
+        for _ in range(self._iter):
             sampled_partition = _SamplePartition.random(
                 data,
                 n_sample=self._n_sample,
                 n_data=n_data,
-                mask=mask,
             )
 
-            sampled_function = model.fit(sampled_partition.inliers)
-            others_err = sampled_function.error(sampled_partition.others)
-            newly_found_inliers = sampled_partition.others[others_err <
-                                                           self._threshold]
-
-            inlier_size = len(sampled_partition.inliers) + \
-                len(newly_found_inliers)
-            if inlier_size > self._inlier_ratio * n_data:
-                inliers = np.concatenate(
-                    (sampled_partition.inliers, newly_found_inliers))
-                outliers = sampled_partition.others[others_err >=
-                                                    self._threshold]
-                this_partition = self._partition_class(
-                    model.fit(inliers),
-                    inliers,
-                    outliers,
-                )
-                if this_partition.is_better_than(best_partition):
-                    best_partition = this_partition
+            updated_partition = self.update_partition(model, sampled_partition)
+            if updated_partition.is_better_than(best_partition):
+                best_partition = updated_partition
 
         if best_partition.function is None:
             raise ValueError("Couldn't find a function with inlier_ratio higher than {}".format(
@@ -99,7 +82,7 @@ class _RANSACFamily:
 class RANSAC(_RANSACFamily):
     """More Inlier the better"""
 
-    def __init__(self, n_sample, n_iter, err_thres, inlier_ratio):
+    def __init__(self, n_sample, n_iter, err_thres, inlier_ratio=0.5):
 
         class _RANSAC_Partition(_Partition):
             @staticmethod
@@ -110,6 +93,25 @@ class RANSAC(_RANSACFamily):
                     return err_thres * len(outliers)
 
         super().__init__(n_sample, n_iter, err_thres, inlier_ratio, _RANSAC_Partition)
+
+    def update_partition(self, model, partition):
+        """Identity"""
+        function = model.fit(partition.inliers)
+        error = function.error(partition.others)
+        threshold_mask = error < self._threshold
+        new_inliers = partition.others[threshold_mask]
+        inliers = np.concatenate(
+            (
+                partition.inliers,
+                new_inliers
+            )
+        )
+        outliers = partition.others[~threshold_mask]
+        return self._partition_class(
+            function,
+            inliers,
+            outliers,
+        )
 
 
 class MSAC(_RANSACFamily):
@@ -126,3 +128,29 @@ class MSAC(_RANSACFamily):
                     return np.mean(function.error(inliers)) + err_thres * len(outliers)
 
         super().__init__(n_sample, n_iter, err_thres, inlier_ratio, _MSAC_Partition)
+
+    def update_partition(self, model, partition):
+        """Update Partition"""
+        function = model.fit(partition.inliers)
+        n_inliers = len(partition.inliers)
+        n_data = n_inliers + len(partition.others)
+        others_err = function.error(partition.others)
+        newly_found_inliers = partition.others[others_err <
+                                               self._threshold]
+        inlier_size = n_inliers + \
+            len(newly_found_inliers)
+        if inlier_size > self._inlier_ratio * n_data:
+            inliers = np.concatenate(
+                (partition.inliers, newly_found_inliers))
+            outliers = partition.others[others_err >=
+                                        self._threshold]
+            return self._partition_class(
+                model.fit(inliers),
+                inliers,
+                outliers,
+            )
+        return self._partition_class(
+            function,
+            partition.inliers,
+            partition.others
+        )
