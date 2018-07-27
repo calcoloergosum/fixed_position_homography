@@ -1,2 +1,3 @@
-from .ransac import RANSAC, MSAC
+from .ransac import RANSAC
+from .msac import MSAC
 from .mlesac import MLESAC
