@@ -14,7 +14,7 @@ def trial_count(inlier_ratio, n_sample, confidence=0.9999999980268246):
     assert 0.5 <= confidence < 1
     assert 0 <= no_good_sample_prob < 1
 
-    val = np.ceil(np.log(1 - confidence) / np.log(no_good_sample_prob))
+    val = np.log(1 - confidence) / np.log(no_good_sample_prob)
     if val == np.inf or val == -np.inf:
         return np.inf
-    return int(val)
+    return int(val) + 1

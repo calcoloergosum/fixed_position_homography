@@ -5,152 +5,102 @@ import numpy as np
 from regression_model import RegressionModel, Function
 
 
-class _SamplePartition:
-    def __init__(self, inliers: np.ndarray, others: np.ndarray):
-        self.inliers = inliers
-        self.others = others
-
-    @staticmethod
-    def random(data, n_sample, n_data=None):
-        if not n_data:
-            n_data = len(data)
-        mask = np.zeros((n_data,), dtype=bool)
-        _idxs = np.random.choice(n_data, n_sample, replace=False)
-
-        mask[_idxs] = True
-        sample = _SamplePartition(
-            inliers=data[mask],
-            others=data[~mask],
-        )
-        return sample
-
-
-class _Partition:
-    @staticmethod
-    def _get_error(function, inliers, outliers):
-        raise NotImplementedError()
-
-    def __init__(self, function: Function, inliers: np.ndarray, outliers: np.ndarray):
+class Partition:
+    def __init__(self, function: Function, inliers: np.ndarray, outliers: np.ndarray, error):
         self.inliers = inliers
         self.outliers = outliers
         self.function = function
-        self.error = self._get_error(
-            self.function, self.inliers, self.outliers)
+        self.error = error
 
     def is_better_than(self, other_record):
         return self.error < other_record.error
 
 
-class _RANSACFamily:
-    def __init__(self, n_sample, n_iter, err_thres, inlier_ratio, partition_class: _Partition):
-        self._iter = n_iter
-        self._threshold = err_thres
-        self._inlier_ratio = inlier_ratio
+class RANSACFamily:
+    def __init__(self, n_sample, n_iter):
         self._n_sample = n_sample
-        self._partition_class = partition_class
-
-    def update_partition(self, function, partition):
-        raise NotImplementedError
+        self._n_iter = n_iter
 
     def __call__(self, data, model: RegressionModel):
         n_data = len(data)
 
-        best_partition = self._partition_class(
-            function=None, inliers=[], outliers=data)
-        for _ in range(self._iter):
-            sampled_partition = _SamplePartition.random(
-                data,
-                n_sample=self._n_sample,
-                n_data=n_data,
-            )
+        best_partition = Partition(function=None, inliers=[], outliers=data, error=np.inf)
+        for mask_idxs in self.random_mask_indices(n_data):
+            partition = self.update_partition(model, data, mask_idxs)
 
-            updated_partition = self.update_partition(model, sampled_partition)
-            if updated_partition.is_better_than(best_partition):
-                best_partition = updated_partition
-
-        if best_partition.function is None:
-            raise ValueError("Couldn't find a function with inlier_ratio higher than {}".format(
-                self._inlier_ratio
-            ))
+            if partition.is_better_than(best_partition):
+                best_partition = partition
 
         return (
             best_partition.function,
             best_partition.inliers
         )
 
+    def random_mask_indices(self, n_data):
+        for i in range(self._n_iter):
+            # Random Sample
+            mask = np.zeros((n_data,), dtype=bool)
+            _idxs = np.random.choice(n_data, self._n_sample, replace=False)
 
-class RANSAC(_RANSACFamily):
+            mask[_idxs] = True
+            yield mask
+
+
+class RANSAC(RANSACFamily):
     """More Inlier the better"""
+    def __init__(self, n_sample, n_iter, err_thres):
+        self.err_thres = err_thres
+        super().__init__(n_sample, n_iter)
 
-    def __init__(self, n_sample, n_iter, err_thres, inlier_ratio=0.5):
-
-        class _RANSAC_Partition(_Partition):
-            @staticmethod
-            def _get_error(function, inliers, outliers):
-                if function is None:
-                    return np.inf
-                else:
-                    return err_thres * len(outliers)
-
-        super().__init__(n_sample, n_iter, err_thres, inlier_ratio, _RANSAC_Partition)
-
-    def update_partition(self, model, partition):
+    def update_partition(self, model, data, mask_idxs):
         """Identity"""
-        function = model.fit(partition.inliers)
-        error = function.error(partition.others)
-        threshold_mask = error < self._threshold
-        new_inliers = partition.others[threshold_mask]
+        inliers = data[mask_idxs]
+        others = data[~mask_idxs]
+
+        function = model.fit(inliers)
+        error = function.error(others)
+        threshold_mask = error < self.err_thres
+        new_inliers = others[threshold_mask]
         inliers = np.concatenate(
             (
-                partition.inliers,
+                inliers,
                 new_inliers
             )
         )
-        outliers = partition.others[~threshold_mask]
-        return self._partition_class(
+        outliers = others[~threshold_mask]
+        return Partition(
             function,
             inliers,
             outliers,
+            error=np.inf if function is None else self.err_thres * len(outliers),
         )
 
 
-class MSAC(_RANSACFamily):
+class MSAC(RANSACFamily):
     """More Inlier Fit the better"""
 
-    def __init__(self, n_sample, n_iter, err_thres, inlier_ratio):
+    def __init__(self, n_sample, n_iter, err_thres, local_iter):
+        self.local_iter = local_iter
+        self.err_thres = err_thres
+        super().__init__(n_sample, n_iter)
 
-        class _MSAC_Partition(_Partition):
-            @staticmethod
-            def _get_error(function, inliers, outliers):
-                if function is None:
-                    return np.inf
-                else:
-                    return np.mean(function.error(inliers)) + err_thres * len(outliers)
-
-        super().__init__(n_sample, n_iter, err_thres, inlier_ratio, _MSAC_Partition)
-
-    def update_partition(self, model, partition):
+    def update_partition(self, model, data, mask_idxs):
         """Update Partition"""
-        function = model.fit(partition.inliers)
-        n_inliers = len(partition.inliers)
-        n_data = n_inliers + len(partition.others)
-        others_err = function.error(partition.others)
-        newly_found_inliers = partition.others[others_err <
-                                               self._threshold]
-        inlier_size = n_inliers + \
-            len(newly_found_inliers)
-        if inlier_size > self._inlier_ratio * n_data:
-            inliers = np.concatenate(
-                (partition.inliers, newly_found_inliers))
-            outliers = partition.others[others_err >=
-                                        self._threshold]
-            return self._partition_class(
-                model.fit(inliers),
-                inliers,
-                outliers,
-            )
-        return self._partition_class(
-            function,
-            partition.inliers,
-            partition.others
+        inliers = data[mask_idxs]
+        others = data[~mask_idxs]
+        for _ in range(self.local_iter):
+            function = model.fit(inliers)
+
+            others_err = function.error(others)
+            new_inliers = others[others_err < self.err_thres]
+            if len(new_inliers) == 0:
+                break
+            inliers = np.concatenate((inliers, new_inliers), axis=0)
+            others = others[others_err >= self.err_thres]
+
+        return Partition(
+            model.fit(inliers),
+            inliers,
+            others,
+            error=np.inf if function is None else np.mean(function.error(inliers)) + self.err_thres * len(others),
         )

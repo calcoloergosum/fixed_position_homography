@@ -14,6 +14,7 @@ class ProjectionModel(RegressionModel):
         When data length is 4, use exact solution
         Otherwise use least squares minimization
         """
+        assert len(data) >= 4
         pts_1, pts_2 = data[:, :2], data[:, 2:]
         ps = []
         for pt1, pt2 in zip(pts_1, pts_2):
@@ -35,6 +36,9 @@ class ProjectionModel(RegressionModel):
             solution = np.linalg.solve(A, b)
         # least squares
         else:
+            print(len(data))
+            print(np.linalg.pinv(A.T @ A).shape, b.shape)
+            print(A.shape, b.shape)
             solution = np.linalg.pinv(A.T @ A) @ A.T @ b
         return Homography(solution.reshape(3, 3), self.intrinsic)
 
