@@ -36,9 +36,6 @@ class ProjectionModel(RegressionModel):
             solution = np.linalg.solve(A, b)
         # least squares
         else:
-            print(len(data))
-            print(np.linalg.pinv(A.T @ A).shape, b.shape)
-            print(A.shape, b.shape)
             solution = np.linalg.pinv(A.T @ A) @ A.T @ b
         return Homography(solution.reshape(3, 3), self.intrinsic)
 
@@ -53,6 +50,10 @@ class Homography(Function):
         self._inv_M = np.linalg.inv(M)
 
     def error(self, inliers, outliers=None):
+        """
+        This is actually somewhat different from first-order estimation by Hartley and Sturm.
+        if you are reading this, please implement :D.
+        """
         x = inliers[:, :2]
         y = inliers[:, 2:]
 
