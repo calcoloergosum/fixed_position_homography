@@ -3,10 +3,15 @@ from regression_model import RegressionModel, Function
 
 
 class ProjectionModel(RegressionModel):
-    def __init__(self, intrinsic=None):
+    def __init__(self, intrinsic=None, t_weight=1):
+        """
+        t_weight: translation weight
+        """
         if intrinsic is None:
             intrinsic = np.identity(3)
         self.intrinsic = intrinsic
+        self._intrinsic_inv = np.linalg.inv(self.intrinsic)
+        self.t_weight = t_weight
 
     def fit(self, data):
         """
@@ -15,9 +20,18 @@ class ProjectionModel(RegressionModel):
         Otherwise use least squares minimization
         """
         assert len(data) >= 4
-        pts_1, pts_2 = data[:, :2], data[:, 2:]
+
+        # apply intrinsic
+        pts1, pts2 = data[:, :2], data[:, 2:]
+
+        pts1 = np.concatenate((pts1, np.ones((len(data), 1))), axis=1)
+        pts2 = np.concatenate((pts2, np.ones((len(data), 1))), axis=1)
+        pts2, pts2 = (self._intrinsic_inv @ pts1.T).T, (self._intrinsic_inv @ pts2.T).T
+        pts1 = pts1[:, :2] / pts1[:, 2, np.newaxis]
+        pts2 = pts2[:, :2] / pts2[:, 2, np.newaxis]
+
         ps = []
-        for pt1, pt2 in zip(pts_1, pts_2):
+        for pt1, pt2 in zip(pts1, pts2):
             x1, y1 = pt1
             x2, y2 = pt2
 
@@ -26,17 +40,13 @@ class ProjectionModel(RegressionModel):
                 (0, 0, 0, -x1, -y1, -1, x1 * y2, y1 * y2, y2),
             ]
             ps.extend(p)
-        ps.append([0, 0, 0, 0, 0, 0, 0, 0, 1])
         A = np.array(ps)
-        b = np.array([0, 0, 0, 0, 0, 0, 0, 0, 1])
         ps = np.array(ps)
 
         # exact
-        if len(data) == 4:
-            solution = np.linalg.solve(A, b)
-        # least squares
-        else:
-            solution = np.linalg.pinv(A.T @ A) @ A.T @ b
+        u, s, v = np.linalg.svd(A)
+        solution = v[-1]
+        solution /= solution[-1]
         return Homography(solution.reshape(3, 3), self.intrinsic)
 
 
@@ -45,9 +55,12 @@ class Homography(Function):
         if intrinsic is None:
             intrinsic = np.identity(3)
         self.intrinsic = intrinsic
+        self._intrinsic_inv = np.linalg.inv(self.intrinsic)
+
         self.M = M
-        self.R, self.t = Homography.decomposeHomography(M, intrinsic)
         self._inv_M = np.linalg.inv(M)
+
+        self.R, self.t = self._decompose()
 
     def error(self, inliers, outliers=None):
         """
@@ -56,6 +69,13 @@ class Homography(Function):
         """
         x = inliers[:, :2]
         y = inliers[:, 2:]
+
+        # apply intrinsic
+        x = np.concatenate((x, np.ones((len(inliers), 1))), axis=1)
+        y = np.concatenate((y, np.ones((len(inliers), 1))), axis=1)
+        x, y = (self._intrinsic_inv @ x.T).T, (self._intrinsic_inv @ y.T).T
+        x = x[:, :2] / x[:, 2, np.newaxis]
+        y = y[:, :2] / y[:, 2, np.newaxis]
 
         x_ = self.transform(y, inverse=True)
         y_ = self.transform(x)
@@ -75,13 +95,9 @@ class Homography(Function):
         warped /= warped[:, 2].reshape(-1, 1)
         return warped[:, :2]
 
-    @staticmethod
-    def decomposeHomography(M, intrinsic):
+    def _decompose(self):
         """Decompose homography to rotation and transition, provided TRANSITION IS APPLIED FIRST"""
-        if intrinsic is not None:
-            A = np.linalg.inv(intrinsic) @ M
-        else:
-            A = M
+        A = self._intrinsic_inv @ self.M
 
         r1 = A[:, 0]
         r2 = A[:, 1]

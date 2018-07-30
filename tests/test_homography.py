@@ -8,7 +8,7 @@ from ransac_test_util import trial_count
 
 
 class TestHomography(unittest.TestCase):
-    def test_homography_estimation(self):
+    def test_homography_estimation_exact(self):
         """
         Test homography estimation by following steps:
         1. randomly compose a ground truth homography
@@ -22,6 +22,30 @@ class TestHomography(unittest.TestCase):
         pts_1 = np.array([(0, 0), (0, 1), (1, 0), (1, 1)])
 
         pts_2 = np.concatenate((pts_1.T, np.ones((1, 4))), axis=0).T @ gt.T
+        pts_2 /= pts_2[:, np.newaxis, 2]
+        pts_2 = pts_2[:, :2]
+
+        data = np.concatenate((pts_1, pts_2), axis=1)
+        M = ProjectionModel().fit(data).M
+        np.testing.assert_almost_equal(M, gt)
+
+    def test_homography_estimation_overconstraint(self):
+        """
+        Test homography estimation by following steps:
+        1. randomly compose a ground truth homography
+        2. make some points using ground truth
+        3. estimate from points
+        4. Compare ground truth and estimated homography
+        """
+        N = 1000
+        assert N > 4
+
+        gt = np.random.random((3, 3))
+        gt[2, 2] = 1
+
+        pts_1 = np.random.rand(N, 2)
+
+        pts_2 = np.concatenate((pts_1.T, np.ones((1, N))), axis=0).T @ gt.T
         pts_2 /= pts_2[:, np.newaxis, 2]
         pts_2 = pts_2[:, :2]
 
